@@ -92,6 +92,38 @@ RUN export REPO_OVERRIDE="" && \
     export COMMIT_ID_OVERRIDE="" && \
     bash /usr/src/dep-versions/scripts/build-nvme-cli.sh "${REPO_OVERRIDE}" "${COMMIT_ID_OVERRIDE}"
 
+# Stage X: Build liburing and custom ublk project (ubdsrv) from source
+FROM ubuntu:25.04 AS ublkprojectbuilder
+
+ARG ARCH=amd64
+ARG SRC_BRANCH=main 
+
+ENV GIT_REPO_URL_UBDSRV="https://github.com/bakaliosdim/ubdsrv.git"
+ENV GIT_BRANCH_OR_TAG_UBDSRV="main"
+# Dependencies for liburing AND ubdsrv on Ubuntu
+ENV BUILD_DEPENDENCIES="git build-essential make cmake autoconf automake libtool pkg-config g++ ca-certificates liburing-dev"
+# Ensure this is >= 2.2
+ENV LURING_VERSION="liburing-2.2"
+
+# PATH_TO_EXECUTABLE_IN_BUILDER is determined by "make install" with --prefix=/usr/local for ubdsrv
+ENV PATH_TO_EXECUTABLE_IN_BUILDER_DIR="/usr/local/sbin" 
+
+RUN apt-get update -y && \
+    # Set DEBIAN_FRONTEND to noninteractive to prevent apt-get from prompting during install
+    apt-get install -y ${BUILD_DEPENDENCIES}
+
+WORKDIR /usr/src
+RUN git clone --branch ${GIT_BRANCH_OR_TAG_UBDSRV} ${GIT_REPO_URL_UBDSRV}
+
+# Now compile ubdsrv, which can link against the liburing installed above
+# Set PKG_CONFIG_PATH to ensure ./configure finds the liburing.pc file from /usr/local
+RUN cd ubdsrv && \
+    autoreconf -i && \
+    ./configure && \
+    make  && \
+    make install
+# ^^ END MODIFIED UBLKPROJECTBUILDER STAGE ^^
+
 # Stage 3: copy binaries to release image
 FROM registry.suse.com/bci/bci-base:15.7 AS release
 
@@ -149,6 +181,9 @@ COPY --from=cbuilder \
    /usr/lib64 \
    /usr/lib64
 
+# Copy the compiled ubdsrv executable
+COPY --from=ublkprojectbuilder /usr/local/sbin/ublk /usr/local/sbin/
+COPY --from=ublkprojectbuilder /usr/local/lib/libublksrv.so.0 /usr/local/lib/
 RUN ldconfig
 
 COPY bin/longhorn-instance-manager /usr/local/bin/
